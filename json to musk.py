@@ -35,7 +35,6 @@ def json_to_mask(json_path, output_dir, class_mapping):
     print(f'Saved mask to {output_path}')
 
 
-# 示例调用
 if __name__ == '__main__':
     json_dir = r'E:\T10'
     output_dir = r'E:\T10-json-mask' 
@@ -47,4 +46,5 @@ if __name__ == '__main__':
         if json_file.endswith('.json'):
             json_path = os.path.join(json_dir, json_file)
             json_to_mask(json_path, output_dir, class_mapping)
+
 
