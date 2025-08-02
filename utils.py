@@ -16,16 +16,12 @@ import numpy as np
 import torch
 from itertools import combinations
 from sklearn.metrics import average_precision_score
-# import torch.nn as nn
-# import torch.optim as optim
-# from matplotlib import pyplot as plt
 from osgeo import gdal_array as ga
 from osgeo import gdal
 from skimage.draw import disk, circle_perimeter
 from collections import deque
 import matplotlib.patches as patches
 from sklearn.metrics import confusion_matrix
-# import torch.nn.functional as F
 from sklearn.decomposition import PCA
 from skimage.morphology import skeletonize, thin, medial_axis, binary_erosion, binary_opening, binary_dilation
 from scipy.ndimage import label, generate_binary_structure
@@ -93,13 +89,10 @@ def cal_scale(image_path):
 
 def compute_direction_vector(arr):
     points = np.argwhere(arr == 255)
-
     if len(points) < 2:
         return None
-
     pca = PCA(n_components=1)
     pca.fit(points)
-
     print(pca.components_)
     direction_vector = pca.components_[0]
     return direction_vector
@@ -109,7 +102,6 @@ def compute_centroid(arr):
     total_mass = np.sum(arr)
     if total_mass == 0:
         return None
-
     centroid_y, centroid_x = np.argwhere(arr > 0).mean(axis=0)
     return centroid_x, centroid_y
 
@@ -1155,3 +1147,4 @@ def bresenham_line(start, end):
             y += ystep
             error += dx
     return line
+
