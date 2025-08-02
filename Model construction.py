@@ -361,7 +361,6 @@ class SegNet(nn.Module):
             x = self.unpool(x, pool_indicies[-i - 1], output_size=encoder_outs[-i - 1].size())
             x = block(x)
 
-        # 最终输出
         return self.sigmoid(x)
 
 
@@ -383,13 +382,8 @@ class ChannelAttention(nn.Module):
 
     def forward(self, x):
         b, c, _, _ = x.size()
-
-        # 平均池化路径
         avg_out = self.fc(self.avg_pool(x).view(b, c))
-        # 最大池化路径
         max_out = self.fc(self.max_pool(x).view(b, c))
-
-        # 自适应融合双路径信息
         out = self.alpha * avg_out + (1 - self.alpha) * max_out
         return out.view(b, c, 1, 1)
 
@@ -430,7 +424,7 @@ class AttentionUNet(nn.Module):
         self.bottleneck = AttnDoubleConv(features * 8, features * 16)
 
         self.upconv4 = nn.ConvTranspose2d(features * 16, features * 8, 2, stride=2)
-        self.decoder4 = AttnDoubleConv(features * 16, features * 8)  # 拼接后通道数翻倍
+        self.decoder4 = AttnDoubleConv(features * 16, features * 8)
         self.upconv3 = nn.ConvTranspose2d(features * 8, features * 4, 2, stride=2)
         self.decoder3 = AttnDoubleConv(features * 8, features * 4)
         self.upconv2 = nn.ConvTranspose2d(features * 4, features * 2, 2, stride=2)
@@ -523,6 +517,58 @@ def cal_metrics(preds, targets):
     mAP /= targets.shape[0]
 
     return accuracy, precision, recall, F1, IOU_true, IOU_false, mIOU, mAP
+
+class ImprovedDiceBCELoss(nn.Module):
+    def __init__(self, smooth=1.0, bce_weight=0.5, dice_weight=0.5,
+                 focal_gamma=0.0, focal_alpha=None, use_log_cosh=False):
+        super(ImprovedDiceBCELoss, self).__init__()
+        self.smooth = smooth
+        self.bce_weight = bce_weight
+        self.dice_weight = dice_weight
+        self.focal_gamma = focal_gamma
+        self.focal_alpha = focal_alpha
+        self.use_log_cosh = use_log_cosh
+
+    def forward(self, inputs, targets):
+
+        probs = torch.sigmoid(inputs)
+        probs = probs.view(-1)
+        targets = targets.view(-1).float()  
+
+        if self.focal_gamma and self.focal_gamma > 0:
+            bce_loss = F.binary_cross_entropy(probs, targets, reduction='none')
+            p_t = torch.exp(-bce_loss) 
+            if self.focal_alpha is not None:
+                alpha_t = targets * self.focal_alpha + (1 - targets) * (1 - self.focal_alpha)
+            else:
+                alpha_t = 1.0
+            focal_loss = alpha_t * ((1 - p_t) ** self.focal_gamma) * bce_loss
+            bce_loss = focal_loss.mean()
+        else:
+            bce_loss = F.binary_cross_entropy(probs, targets)
+
+        intersection = (probs * targets).sum()
+        union = probs.sum() + targets.sum()
+        dice_score = (2 * intersection + self.smooth) / (union + self.smooth)
+        dice_loss = 1 - dice_score
+        if self.use_log_cosh:
+            dice_loss = torch.log(torch.cosh(dice_loss))
+        total_loss = self.bce_weight * bce_loss + self.dice_weight * dice_loss
+        return total_loss
+
+
+class DiceBCELoss(nn.Module):
+    def __init__(self, weight=0.5):
+        super().__init__()
+        self.weight = weight
+
+    def forward(self, inputs, targets):
+        criterion = nn.BCELoss()
+        bce_loss = criterion(inputs, targets)
+        smooth = 1.0
+        intersection = (inputs * targets).sum()
+        dice = 1 - (2. * intersection + smooth) / (inputs.sum() + targets.sum() + smooth)
+        return self.weight * bce_loss + (1 - self.weight) * dice
 
 
 def train(model, train_loader, val_loader, optimizer, criterion, device, scheduler, lambda_acc=0.5, num_epochs=100,
@@ -715,7 +761,6 @@ def crop_image_and_pre(img_path, module, device, crop_size=64, stride=64, output
     mask_arr = np.zeros_like(raster[0])
     out_arr = np.zeros_like(raster[0])
 
-    # 计算裁剪位置
     for y in range(0, h, stride):
         for x in range(0, w, stride):
             if (y + crop_size) > h or (x + crop_size) > w:
@@ -742,4 +787,5 @@ def crop_image_and_pre(img_path, module, device, crop_size=64, stride=64, output
     out_arr[mask] = mask_arr[mask]
     raster = raster.transpose(1, 2, 0)
     return raster, mask_arr, out_arr
+
 
