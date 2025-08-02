@@ -58,7 +58,6 @@ def cal_fauna_length_width(image_path, model, device, window_size=11, max_window
                'length(mm)', 'width(mm)', 'status']
     animal_data = pd.DataFrame(columns=columns)
     base_name = os.path.splitext(os.path.basename(image_path))[0] + '.png'
-
     image_raster, raster_origin, raster_opened, properties_origin, properties_opened = utils.find_rect_new(image_path,
                                                                                                            model,
                                                                                                            device,
@@ -238,3 +237,4 @@ def cal_fauna_length_width(image_path, model, device, window_size=11, max_window
                     cell.font = red_font if df_row_idx in red_rows else black_font
 
             workbook.save(excel_output_path)
+
