@@ -1,5 +1,5 @@
 import math
-
+import os
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
@@ -11,12 +11,16 @@ import torch.nn.functional as F
 from sklearn.metrics import average_precision_score
 from sklearn.metrics import confusion_matrix
 from tqdm import tqdm
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
+import seaborn as sns
+from scipy import stats
+from sklearn.metrics import r2_score
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+from osgeo import gdal_array as ga
 
 
 def vgg_block(num_convs, in_channels, out_channels):
-    """
-    vgg block: Conv2d ReLU MaxPool2d
-    """
     blk = []
     for i in range(num_convs):
         if i == 0:
@@ -216,13 +220,9 @@ class DeepLabV3(nn.Module):
 
     def forward(self, x):
         x = self.backbone(x)
-
         x = self.aspp(x)
-
         x = self.classifier(x)
-
         x = self.up(x)
-
         return self.sigmoid(x)
 
 
@@ -347,16 +347,13 @@ class SegNet(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-
         encoder_outs = []
         pool_indicies = []
-
         for i, block in enumerate(self.encoder_conv):
             x = block(x)
             encoder_outs.append(x)
             x, indices = self.pool(x)
             pool_indicies.append(indices)
-
         for i, block in enumerate(self.decoder_conv):
             x = self.unpool(x, pool_indicies[-i - 1], output_size=encoder_outs[-i - 1].size())
             x = block(x)
@@ -365,19 +362,16 @@ class SegNet(nn.Module):
 
 
 class ChannelAttention(nn.Module):
-
     def __init__(self, in_channels, reduction=8):
         super().__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.max_pool = nn.AdaptiveMaxPool2d(1)
-
         self.fc = nn.Sequential(
             nn.Linear(in_channels, in_channels // reduction),
             nn.ReLU(inplace=True),
             nn.Linear(in_channels // reduction, in_channels),
             nn.Sigmoid()
         )
-
         self.alpha = nn.Parameter(torch.tensor(0.5))
 
     def forward(self, x):
@@ -389,7 +383,6 @@ class ChannelAttention(nn.Module):
 
 
 class AttnDoubleConv(nn.Module):
-
     def __init__(self, in_channels, out_channels):
         super().__init__()
         self.double_conv = nn.Sequential(
@@ -444,32 +437,24 @@ class AttentionUNet(nn.Module):
 
     def forward(self, x):
         enc1 = self.encoder1(x)
-        # print(enc1.shape)
         enc2 = self.encoder2(self.pool1(enc1))
-        # print(enc2.shape)
         enc3 = self.encoder3(self.pool2(enc2))
-        # print(enc3.shape)
         enc4 = self.encoder4(self.pool3(enc3))
-        # print(enc4.shape)
 
         bottleneck = self.bottleneck(self.pool4(enc4))
 
         dec4 = self.upconv4(bottleneck)
         dec4 = torch.cat((dec4, enc4), dim=1)
         dec4 = self.decoder4(dec4)
-
         dec3 = self.upconv3(dec4)
         dec3 = torch.cat((dec3, enc3), dim=1)
         dec3 = self.decoder3(dec3)
-
         dec2 = self.upconv2(dec3)
         dec2 = torch.cat((dec2, enc2), dim=1)
         dec2 = self.decoder2(dec2)
-
         dec1 = self.upconv1(dec2)
         dec1 = torch.cat((dec1, enc1), dim=1)
         dec1 = self.decoder1(dec1)
-
         out = self.conv_out(dec1)
 
         return self.sigmoid(out)
@@ -485,10 +470,10 @@ def cal_metrics(preds, targets):
         metrix = confusion_matrix(targets[i].flatten(), preds[i].flatten())
         if metrix.shape == (1, 1):
             metrix = np.array([[metrix[0, 0], 0], [0, metrix[0, 0]]])
-        TP = metrix[1, 1]  # True Positive
-        TN = metrix[0, 0]  # True Negative
-        FP = metrix[0, 1]  # False Positive
-        FN = metrix[1, 0]  # False Negative
+        TP = metrix[1, 1]
+        TN = metrix[0, 0]
+        FP = metrix[0, 1]
+        FN = metrix[1, 0]
 
         accuracy += (TP + TN) / (TP + TN + FP + FN)
         precision += TP / (TP + FP) if (TP + FP) != 0 else 0
@@ -518,6 +503,7 @@ def cal_metrics(preds, targets):
 
     return accuracy, precision, recall, F1, IOU_true, IOU_false, mIOU, mAP
 
+
 class ImprovedDiceBCELoss(nn.Module):
     def __init__(self, smooth=1.0, bce_weight=0.5, dice_weight=0.5,
                  focal_gamma=0.0, focal_alpha=None, use_log_cosh=False):
@@ -533,11 +519,11 @@ class ImprovedDiceBCELoss(nn.Module):
 
         probs = torch.sigmoid(inputs)
         probs = probs.view(-1)
-        targets = targets.view(-1).float()  
+        targets = targets.view(-1).float()
 
         if self.focal_gamma and self.focal_gamma > 0:
             bce_loss = F.binary_cross_entropy(probs, targets, reduction='none')
-            p_t = torch.exp(-bce_loss) 
+            p_t = torch.exp(-bce_loss)
             if self.focal_alpha is not None:
                 alpha_t = targets * self.focal_alpha + (1 - targets) * (1 - self.focal_alpha)
             else:
@@ -603,9 +589,6 @@ def train(model, train_loader, val_loader, optimizer, criterion, device, schedul
             predictions = model(data)
 
             preds = (predictions > 0.5).float()
-            # train_score += (2 * (preds * targets).sum()) / ((preds + targets).sum() + 1e-8)
-            # bce_loss = criterion(predictions, targets)
-            # accuracy, precision, recall, f1_score = cal_metrics(preds, targets)
             accuracy, precision, recall, f1_score, IOU_true, IOU_false, mIOU, mAP = cal_metrics(preds, targets)
             train_metrics['train_acc'] += accuracy
             train_metrics['train_precision'] += precision
@@ -615,7 +598,6 @@ def train(model, train_loader, val_loader, optimizer, criterion, device, schedul
             train_metrics['train_IOU_false'] += IOU_false
             train_metrics['train_mIOU'] += mIOU
             train_metrics['train_AP'] += mAP
-            # loss = bce_loss + (1 - accuracy) * lambda_acc
             loss = criterion(predictions, targets)
             loss.backward()
             train_loss += loss.item()
@@ -679,7 +661,7 @@ def train(model, train_loader, val_loader, optimizer, criterion, device, schedul
     return model, history
 
 
-def vis_hitory(history):
+def vis_history(history):
     plt.figure(figsize=(12, 8))
     plt.rcParams['font.family'] = 'Arial'
     plt.rcParams['font.size'] = 14
@@ -692,7 +674,6 @@ def vis_hitory(history):
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.legend(prop={'family': 'Arial', 'size': 14})
-    # 添加编号标签 (左上角，相对坐标)
     plt.text(0.02, 0.95, 'a)', transform=plt.gca().transAxes,
              fontsize=16, fontweight='bold', va='top')
 
@@ -726,13 +707,11 @@ def vis_hitory(history):
     plt.text(0.02, 0.95, 'd)', transform=plt.gca().transAxes,
              fontsize=16, fontweight='bold', va='top')
 
-
     plt.subplots_adjust(wspace=0.3, hspace=0.3)
     plt.show()
 
 
 def RGB_to_gray(raster, label_filter=False, savepath=None, ga=None):
-
     if label_filter:
         array = raster[0]
         array[array == 255] = 0
@@ -743,6 +722,46 @@ def RGB_to_gray(raster, label_filter=False, savepath=None, ga=None):
     if savepath is not None:
         ga.SaveArray(raster_gray, savepath)
     return raster_gray
+
+
+def crop_image_and_mask(img_path, mask_path, output_dir, crop_size=64, stride=64):
+    img = gdal.Open(img_path)
+    raster = img.ReadAsArray()
+
+    img2 = gdal.Open(mask_path)
+    raster2 = img2.ReadAsArray()
+
+    assert raster.shape[1:] == raster2.shape, "Size not match"
+
+    img_output_dir = os.path.join(output_dir, "images")
+    mask_output_dir = os.path.join(output_dir, "masks")
+    os.makedirs(img_output_dir, exist_ok=True)
+    os.makedirs(mask_output_dir, exist_ok=True)
+
+    h, w = raster.shape[1:]
+    base_name = os.path.splitext(os.path.basename(img_path))[0]
+
+    count = 0
+    for y in range(0, h, stride):
+        for x in range(0, w, stride):
+            if (y + crop_size) > h or (x + crop_size) > w:
+                continue
+
+            img_crop = raster[:, y:y + crop_size, x:x + crop_size]
+            mask_crop = raster2[y:y + crop_size, x:x + crop_size]
+
+            total_pixels = mask_crop.size
+            num_255_pixels = np.sum(mask_crop == 255)
+            percentage = (num_255_pixels / total_pixels) * 100
+
+            if percentage > 20:
+                count += 1
+                crop_name = f"{base_name}_clip{count}.png"
+
+                ga.SaveArray(img_crop, os.path.join(img_output_dir, crop_name))
+                ga.SaveArray(mask_crop, os.path.join(mask_output_dir, crop_name))
+
+    print(f"Finish：{img_path} -> {count}")
 
 
 def crop_image_and_pre(img_path, module, device, crop_size=64, stride=64, output_dir=None):
@@ -789,3 +808,110 @@ def crop_image_and_pre(img_path, module, device, crop_size=64, stride=64, output
     return raster, mask_arr, out_arr
 
 
+def calculate_ccc(x, y):
+    mean_x = np.mean(x)
+    mean_y = np.mean(y)
+    var_x = np.var(x, ddof=1)
+    var_y = np.var(y, ddof=1)
+    cov_xy = np.cov(x, y, ddof=1)[0, 1]
+
+    numerator = 2 * cov_xy
+    denominator = var_x + var_y + (mean_x - mean_y) ** 2
+    ccc = numerator / denominator
+    return ccc
+
+
+def visualize(collembola, mite):
+    plt.figure(figsize=(12, 8))
+    plt.rcParams['font.family'] = 'Arial'
+    plt.rcParams['font.size'] = 12
+    plt.rcParams['axes.labelsize'] = 15
+
+    # ---------------------  a) collembola length ---------------------
+    plt.subplot(221)
+    r_squared1 = r2_score(collembola[0], collembola[1])
+    mae = mean_absolute_error(collembola[0], collembola[1])
+    mse = mean_squared_error(collembola[0], collembola[1])
+    rmse = np.sqrt(mse)
+    print('mse', mse, 'rmse', rmse, 'mae', mae)
+    t_stat1, p_value1 = stats.ttest_rel(collembola[0], collembola[1])
+    print(f't-statistic: {t_stat1}, p-value: {p_value1}')
+    plt.plot([0, 1], [0, 1], color='gray', linestyle='--')
+    scatter = sns.regplot(x=collembola[0], y=collembola[1], ci=95, color="#3d95d2")
+    scatter.get_children()[1]
+    Patch(facecolor="#3d95d2", alpha=1, edgecolor="none")
+    Line2D([], [], color="#3d95d2")
+    plt.xlabel('Manual-measured Length (mm)')
+    plt.ylabel('Auto-measured Length (mm)')
+    plt.xticks(np.arange(0, 1.2, 0.2))
+    plt.yticks(np.arange(0, 1.2, 0.2))
+    plt.text(0.02, 0.95, 'a)', transform=plt.gca().transAxes,
+             fontsize=16, fontweight='bold', va='top')
+    plt.text(0.75, 0.05, f'$R^2$ = {r_squared1:.2f}', fontsize=15, transform=plt.gca().transAxes)
+
+    # ---------------------  b) collembola width ---------------------
+    plt.subplot(222)
+    r_squared2 = r2_score(collembola[2], collembola[3])
+    mae = mean_absolute_error(collembola[2], collembola[3])
+    mse = mean_squared_error(collembola[2], collembola[3])
+    rmse = np.sqrt(mse)
+    print('mse', mse, 'rmse', rmse)
+    t_stat2, p_value2 = stats.ttest_rel(collembola[2], collembola[3])
+    print(f't-statistic: {t_stat2}, p-value: {p_value2}')
+    plt.plot([0, 0.3], [0, 0.3], color='gray', linestyle='--')
+    scatter = sns.regplot(x=collembola[2], y=collembola[3], ci=95, color="#3d95d2")
+    scatter.get_children()[1]
+    Patch(facecolor="#3d95d2", alpha=1, edgecolor="none")
+    Line2D([], [], color="#3d95d2")
+    plt.xlabel('Manual-measured Width (mm)')
+    plt.ylabel('Auto-measured Width (mm)')
+    plt.xticks(np.arange(0, 0.4, 0.1))
+    plt.yticks(np.arange(0, 0.4, 0.1))
+    plt.text(0.02, 0.95, 'b)', transform=plt.gca().transAxes,
+             fontsize=16, fontweight='bold', va='top')
+    plt.text(0.75, 0.05, f'$R^2$ = {r_squared2:.2f}', fontsize=15, transform=plt.gca().transAxes)
+
+    # --------------------- c) mite length ---------------------
+    plt.subplot(223)
+    r_squared3 = r2_score(mite[0], mite[1])
+
+    mse = mean_squared_error(mite[0], mite[1])
+    rmse = np.sqrt(mse)
+    print('mse', mse, 'rmse', rmse)
+    t_stat3, p_value3 = stats.ttest_rel(mite[0], mite[1])
+    print(f't-statistic: {t_stat3}, p-value: {p_value3}')
+    plt.plot([0, 0.8], [0, 0.8], color='gray', linestyle='--')
+    scatter = sns.regplot(x=mite[0], y=mite[1], ci=95, color="#f16147")
+    scatter.get_children()[1]
+    Patch(facecolor="#f16147", alpha=1, edgecolor="none")
+    Line2D([], [], color="#f16147")
+    plt.xlabel('Manual-measured Length (mm)')
+    plt.ylabel('Auto-measured Length (mm)')
+    plt.xticks(np.arange(0, 0.9, 0.2))
+    plt.yticks(np.arange(0, 0.9, 0.2))
+    plt.text(0.02, 0.95, 'c)', transform=plt.gca().transAxes,
+             fontsize=16, fontweight='bold', va='top')
+    plt.text(0.75, 0.05, f'$R^2$ = {r_squared3:.2f}', fontsize=15, transform=plt.gca().transAxes)
+
+    # --------------------- d) mite width ---------------------
+    plt.subplot(224)
+    r_squared4 = r2_score(mite[2], mite[3])
+    mse = mean_squared_error(mite[2], mite[3])
+    rmse = np.sqrt(mse)
+    print('mse', mse, 'rmse', rmse)
+    t_stat4, p_value4 = stats.ttest_rel(mite[2], mite[3])
+    print(f't-statistic: {t_stat4}, p-value: {p_value4}')
+    plt.plot([0, 0.4], [0, 0.4], color='gray', linestyle='--')
+    scatter = sns.regplot(x=mite[2], y=mite[3], ci=95)
+    scatter.get_children()[1]
+    Patch(facecolor="#f16147", alpha=1, edgecolor="none")
+    Line2D([], [], color="#f16147")
+    plt.xlabel('Manual-measured Width (mm)')
+    plt.ylabel('Auto-measured Width (mm)')
+    plt.xticks(np.arange(0, 0.5, 0.1))
+    plt.yticks(np.arange(0, 0.5, 0.1))
+    plt.text(0.02, 0.95, 'd)', transform=plt.gca().transAxes,
+             fontsize=16, fontweight='bold', va='top')
+    plt.text(0.75, 0.05, f'$R^2$ = {r_squared4:.2f}', fontsize=15, transform=plt.gca().transAxes)
+    plt.subplots_adjust(wspace=0.3, hspace=0.3)
+    plt.show()
